@@ -221,12 +221,10 @@ export default function App() {
   useEffect(() => { return onAuthChange(u => { setUser(u); setAuthLoading(false); }); }, []);
 
   useEffect(() => {
-    if (!user) {
-      // User logged out — keep showing assets from memory (already loaded)
-      // Don't clear so data isn't lost on logout
-      return;
-    }
-    // User logged in — load their specific data
+    // ALWAYS clear assets first on any user change (login/logout/switch)
+    setAssets([]);
+    if (!user) return;
+    // Load data specifically for this user
     loadSavingsFromCloud(user.uid).then(data => { setAssets(data); });
   }, [user]);
 

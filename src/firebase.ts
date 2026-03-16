@@ -17,41 +17,41 @@ export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
-
-// Logout — JANGAN hapus localStorage, biarkan tetap ada sebagai cache
 export const signOutUser = () => signOut(auth);
-
 export const onAuthChange = (cb: (user: User | null) => void) => onAuthStateChanged(auth, cb);
 
-// Key unik per user
-const localKey = (userId: string) => `crypto_assets_${userId}`;
+// Key localStorage SELALU unik per userId — tidak bisa bocor antar user
+const localKey = (userId: string) => `crypto_v3_${userId}`;
 
 export const saveSavingsToCloud = async (userId: string, savings: any[]) => {
-  // Selalu simpan ke localStorage dulu (tidak pernah dihapus)
+  // Simpan ke localStorage dengan key unik user ini
   localStorage.setItem(localKey(userId), JSON.stringify(savings));
   try {
     await setDoc(doc(db, 'users', userId), { savings, updatedAt: Date.now() });
   } catch (e) {
-    console.warn('Firestore save failed, using localStorage only:', e);
+    console.warn('Firestore save failed, using localStorage:', e);
   }
 };
 
 export const loadSavingsFromCloud = async (userId: string): Promise<any[]> => {
-  // Coba Firestore dulu (data paling up-to-date)
+  // Coba Firestore dulu
   try {
     const snap = await getDoc(doc(db, 'users', userId));
     if (snap.exists() && snap.data().savings?.length) {
       const data = snap.data().savings;
-      // Update cache localStorage dengan data terbaru dari cloud
       localStorage.setItem(localKey(userId), JSON.stringify(data));
       return data;
     }
   } catch (e) {
-    console.warn('Firestore load failed, using localStorage cache:', e);
+    console.warn('Firestore load failed:', e);
   }
-  // Fallback ke localStorage cache user ini
+  // Fallback: hanya baca localStorage milik user ini
   const local = localStorage.getItem(localKey(userId));
-  return local ? JSON.parse(local) : [];
+  if (local) {
+    try { return JSON.parse(local); } catch { return []; }
+  }
+  // Benar-benar baru — kembalikan array kosong
+  return [];
 };
 
 export type { User };

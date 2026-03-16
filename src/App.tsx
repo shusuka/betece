@@ -83,6 +83,7 @@ function FGGauge({ value, label }: FearGreed) {
 }
 
 // ─── Mini Sparkline ────────────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function Sparkline({ data, color }: { data: number[]; color: string }) {
   if (!data.length) return null;
   const min = Math.min(...data), max = Math.max(...data);

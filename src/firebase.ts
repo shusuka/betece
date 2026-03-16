@@ -17,35 +17,49 @@ export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
-export const signOutUser = () => signOut(auth);
+
+// Saat logout — bersihkan localStorage user yang sedang aktif
+export const signOutUser = async () => {
+  const user = auth.currentUser;
+  if (user) {
+    // Hapus cache localStorage user ini saja
+    localStorage.removeItem(`crypto_assets_${user.uid}`);
+  }
+  await signOut(auth);
+};
+
 export const onAuthChange = (cb: (user: User | null) => void) => onAuthStateChanged(auth, cb);
 
-// Save with fallback to localStorage if Firestore blocked
+// Key localStorage unik per user — tidak bisa bocor ke user lain
+const localKey = (userId: string) => `crypto_assets_${userId}`;
+
 export const saveSavingsToCloud = async (userId: string, savings: any[]) => {
-  localStorage.setItem('crypto_assets_v2', JSON.stringify(savings));
+  // Simpan di localStorage dengan key unik per user
+  localStorage.setItem(localKey(userId), JSON.stringify(savings));
   try {
     await setDoc(doc(db, 'users', userId), { savings, updatedAt: Date.now() });
   } catch (e) {
-    // Firestore might be blocked by ad blocker — localStorage already saved above
     console.warn('Firestore save failed, using localStorage:', e);
   }
 };
 
-// Load with fallback to localStorage if Firestore blocked
 export const loadSavingsFromCloud = async (userId: string): Promise<any[]> => {
   try {
     const snap = await getDoc(doc(db, 'users', userId));
     if (snap.exists()) {
       const data = snap.data().savings || [];
-      localStorage.setItem('crypto_assets_v2', JSON.stringify(data));
+      // Cache di localStorage dengan key user ini
+      localStorage.setItem(localKey(userId), JSON.stringify(data));
       return data;
     }
   } catch (e) {
     console.warn('Firestore load failed, using localStorage:', e);
-    const local = localStorage.getItem('crypto_assets_v2');
+    // Fallback ke localStorage user ini saja
+    const local = localStorage.getItem(localKey(userId));
     if (local) return JSON.parse(local);
   }
-  const local = localStorage.getItem('crypto_assets_v2');
+  // Cek localStorage user ini
+  const local = localStorage.getItem(localKey(userId));
   return local ? JSON.parse(local) : [];
 };
 

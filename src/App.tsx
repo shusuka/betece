@@ -14,7 +14,6 @@ interface FearGreed { value: number; label: string; }
 interface CoinMarket { id: string; symbol: string; name: string; image: string; current_price: number; price_change_percentage_24h: number; market_cap: number; }
 interface NewsItem { title: string; url: string; source: string; published: string; publishedRaw: Date; summary: string; sentiment: 'positive' | 'negative' | 'neutral'; }
 
-const STORAGE_KEY = 'crypto_assets_v2';
 const fmtIDR = (v: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
 const fmtUSD = (v: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
 const fmtCoin = (v: number) => v < 0.01 ? v.toFixed(8) : v < 1 ? v.toFixed(4) : v.toFixed(2);
@@ -155,12 +154,12 @@ export default function App() {
   useEffect(() => { return onAuthChange(u => { setUser(u); setAuthLoading(false); }); }, []);
 
   useEffect(() => {
-    if (!user) { const l = localStorage.getItem(STORAGE_KEY); if (l) setAssets(JSON.parse(l)); return; }
-    loadSavingsFromCloud(user.uid).then(data => { if (data.length) setAssets(data); else { const l = localStorage.getItem(STORAGE_KEY); if (l) setAssets(JSON.parse(l)); } });
+    if (!user) { setAssets([]); return; }
+    loadSavingsFromCloud(user.uid).then(data => { setAssets(data); });
   }, [user]);
 
   const persistAssets = useCallback((data: Asset[]) => {
-    setAssets(data); localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    setAssets(data);
     if (user) { clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => saveSavingsToCloud(user.uid, data), 1500); }
   }, [user]);
 

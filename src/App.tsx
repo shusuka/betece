@@ -251,7 +251,6 @@ export default function App() {
       if (fg.data?.[0]) setFearGreed({ value: parseInt(fg.data[0].value), label: fg.data[0].value_classification });
       const coins: CoinMarket[] = await coinsR.json();
       setMarketCoins(coins);
-      const sorted = [...coins].sort((a, b) => (b.price_change_percentage_24h ?? 0) - (a.price_change_percentage_24h ?? 0));
       // gainers/losers computed in render based on marketTimeframe
       const prices: Record<string, number> = {}; coins.forEach(c => prices[c.id] = c.current_price); setCurrentPrices(prices);
     } catch {} finally { setMarketLoading(false); }

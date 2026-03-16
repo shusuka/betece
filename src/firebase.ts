@@ -2,7 +2,6 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
 
-// User replaces these with their own Firebase config
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY || "YOUR_API_KEY",
   authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || "YOUR_AUTH_DOMAIN",
@@ -21,15 +20,33 @@ export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);
 export const signOutUser = () => signOut(auth);
 export const onAuthChange = (cb: (user: User | null) => void) => onAuthStateChanged(auth, cb);
 
-// Save savings to Firestore per user
+// Save with fallback to localStorage if Firestore blocked
 export const saveSavingsToCloud = async (userId: string, savings: any[]) => {
-  await setDoc(doc(db, 'users', userId), { savings, updatedAt: Date.now() });
+  localStorage.setItem('crypto_assets_v2', JSON.stringify(savings));
+  try {
+    await setDoc(doc(db, 'users', userId), { savings, updatedAt: Date.now() });
+  } catch (e) {
+    // Firestore might be blocked by ad blocker — localStorage already saved above
+    console.warn('Firestore save failed, using localStorage:', e);
+  }
 };
 
+// Load with fallback to localStorage if Firestore blocked
 export const loadSavingsFromCloud = async (userId: string): Promise<any[]> => {
-  const snap = await getDoc(doc(db, 'users', userId));
-  if (snap.exists()) return snap.data().savings || [];
-  return [];
+  try {
+    const snap = await getDoc(doc(db, 'users', userId));
+    if (snap.exists()) {
+      const data = snap.data().savings || [];
+      localStorage.setItem('crypto_assets_v2', JSON.stringify(data));
+      return data;
+    }
+  } catch (e) {
+    console.warn('Firestore load failed, using localStorage:', e);
+    const local = localStorage.getItem('crypto_assets_v2');
+    if (local) return JSON.parse(local);
+  }
+  const local = localStorage.getItem('crypto_assets_v2');
+  return local ? JSON.parse(local) : [];
 };
 
 export type { User };

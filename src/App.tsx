@@ -224,7 +224,7 @@ export default function App() {
       if (fg.data?.[0]) setFearGreed({ value: parseInt(fg.data[0].value), label: fg.data[0].value_classification });
       const coins: CoinMarket[] = await coinsR.json();
       setMarketCoins(coins);
-      const sorted = [...coins].sort((a,b)=>b.price_change_percentage_24h-a.price_change_percentage_24h);
+      const sorted = [...coins].sort((a,b)=>(b.price_change_percentage_24h??0)-(a.price_change_percentage_24h??0));
       setTopGainers(sorted.slice(0,5));
       setTopLosers(sorted.slice(-5).reverse());
       const prices: Record<string,number> = {};
@@ -453,7 +453,7 @@ export default function App() {
                       <div key={c.id} className="mover-row">
                         <img src={c.image} alt={c.symbol} className="coin-img"/>
                         <div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div>
-                        <span className="coin-chg gain">+{c.price_change_percentage_24h.toFixed(2)}%</span>
+                        <span className="coin-chg gain">+{(c.price_change_percentage_24h??0).toFixed(2)}%</span>
                       </div>
                     ))}
                   </div>
@@ -463,7 +463,7 @@ export default function App() {
                       <div key={c.id} className="mover-row">
                         <img src={c.image} alt={c.symbol} className="coin-img"/>
                         <div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div>
-                        <span className="coin-chg loss">{c.price_change_percentage_24h.toFixed(2)}%</span>
+                        <span className="coin-chg loss">{(c.price_change_percentage_24h??0).toFixed(2)}%</span>
                       </div>
                     ))}
                   </div>
@@ -605,7 +605,7 @@ export default function App() {
                       </div>
                       <div className="coin-row-right">
                         <span className="coin-row-price">{fmtUSD(c.current_price)}</span>
-                        <span className={`coin-row-chg ${c.price_change_percentage_24h>=0?'gain':'loss'}`}>{c.price_change_percentage_24h>=0?'+':''}{c.price_change_percentage_24h.toFixed(2)}%</span>
+                        <span className={`coin-row-chg ${(c.price_change_percentage_24h??0)>=0?'gain':'loss'}`}>{c.price_change_percentage_24h>=0?'+':''}{(c.price_change_percentage_24h??0).toFixed(2)}%</span>
                       </div>
                     </div>
                   ))}
@@ -622,7 +622,7 @@ export default function App() {
                   <img src={selectedCoin.image} alt="" className="sel-coin-img"/>
                   <div>
                     <div className="sel-coin-price">{fmtUSD(selectedCoin.current_price)}</div>
-                    <div className={`sel-coin-chg ${selectedCoin.price_change_percentage_24h>=0?'green':'red'}`}>{selectedCoin.price_change_percentage_24h>=0?'▲':'▼'} {Math.abs(selectedCoin.price_change_percentage_24h).toFixed(2)}%</div>
+                    <div className={`sel-coin-chg ${selectedCoin.price_change_percentage_24h>=0?'green':'red'}`}>{selectedCoin.price_change_percentage_24h>=0?'▲':'▼'} {Math.abs(selectedCoin.price_change_percentage_24h??0).toFixed(2)}%</div>
                   </div>
                 </div>
                 <div className="type-toggle">

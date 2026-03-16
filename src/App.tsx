@@ -11,7 +11,7 @@ interface Asset {
 }
 interface BTCData { price: number; change24h: number; lastUpdated: string; }
 interface FearGreed { value: number; label: string; }
-interface CoinMarket { id: string; symbol: string; name: string; image: string; current_price: number; price_change_percentage_24h: number; market_cap: number; }
+interface CoinMarket { id: string; symbol: string; name: string; image: string; current_price: number; price_change_percentage_1h_in_currency?: number; price_change_percentage_4h_in_currency?: number; price_change_percentage_24h: number; market_cap: number; }
 interface NewsItem { title: string; url: string; source: string; published: string; publishedRaw: Date; summary: string; sentiment: 'positive' | 'negative' | 'neutral'; }
 
 const fmtIDR = (v: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v);
@@ -59,45 +59,110 @@ function FGGauge({ value, label }: FearGreed) {
 
 // ─── Donut Chart ──────────────────────────────────────────────────────────────
 function DonutChart({ assets, currentPrices }: { assets: Asset[], currentPrices: Record<string, number> }) {
-  const palette = ['#ff6eb4', '#a78bfa', '#43e8d8', '#ffb347', '#a8ff78', '#ff7f7f', '#60a5fa', '#f472b6'];
-  const grouped: Record<string, { value: number; color: string; symbol: string }> = {};
+  const palette = [
+    { solid: '#ff6eb4', glow: 'rgba(255,110,180,0.5)' },
+    { solid: '#a78bfa', glow: 'rgba(167,139,250,0.5)' },
+    { solid: '#43e8d8', glow: 'rgba(67,232,216,0.5)' },
+    { solid: '#ffb347', glow: 'rgba(255,179,71,0.5)'  },
+    { solid: '#a8ff78', glow: 'rgba(168,255,120,0.5)' },
+    { solid: '#f472b6', glow: 'rgba(244,114,182,0.5)' },
+    { solid: '#60a5fa', glow: 'rgba(96,165,250,0.5)'  },
+    { solid: '#fb923c', glow: 'rgba(251,146,60,0.5)'  },
+  ];
+  const [hovered, setHovered] = React.useState<string|null>(null);
+  const grouped: Record<string, { value: number; color: typeof palette[0]; symbol: string; name: string; image: string }> = {};
   let ci = 0;
   assets.filter(a => a.type === 'buy').forEach(a => {
-    const price = currentPrices[a.coinId] || a.priceAtBuyUSD;
-    const val = a.amountCoin * price;
-    if (!grouped[a.coinId]) grouped[a.coinId] = { value: 0, color: palette[ci++ % palette.length], symbol: a.coinSymbol };
+    const val = a.amountCoin * (currentPrices[a.coinId] || a.priceAtBuyUSD);
+    if (!grouped[a.coinId]) grouped[a.coinId] = { value: 0, color: palette[ci++ % palette.length], symbol: a.coinSymbol, name: a.coinName, image: a.coinImage };
     grouped[a.coinId].value += val;
   });
   const entries = Object.entries(grouped).sort((a, b) => b[1].value - a[1].value);
   const total = entries.reduce((s, [, v]) => s + v.value, 0);
-  if (!total) return <div className="donut-empty">Belum ada aset</div>;
-  const cx = 70, cy = 70, r = 55, ir = 38;
+  if (!total) return (
+    <div className="donut-empty-fancy">
+      <div className="donut-empty-icon">💎</div>
+      <p>Belum ada aset</p>
+      <span>Tambah aset pertama kamu!</span>
+    </div>
+  );
+  const cx = 80, cy = 80, r = 62, ir = 42, gap = 2.5;
   let angle = -90;
-  const slices = entries.map(([id, { value, color, symbol }]) => {
-    const pct = value / total; const sweep = pct * 360; const startA = angle; angle += sweep;
-    const toR = (d: number) => d * Math.PI / 180;
+  const toR = (d: number) => d * Math.PI / 180;
+  const slices = entries.map(([id, { value, color, symbol, name, image }]) => {
+    const pct = value / total;
+    const sweep = pct * 360 - gap;
+    const startA = angle + gap / 2; angle += pct * 360;
     const x1 = cx + r * Math.cos(toR(startA)), y1 = cy + r * Math.sin(toR(startA));
     const x2 = cx + r * Math.cos(toR(startA + sweep)), y2 = cy + r * Math.sin(toR(startA + sweep));
     const ix1 = cx + ir * Math.cos(toR(startA)), iy1 = cy + ir * Math.sin(toR(startA));
     const ix2 = cx + ir * Math.cos(toR(startA + sweep)), iy2 = cy + ir * Math.sin(toR(startA + sweep));
     const large = sweep > 180 ? 1 : 0;
-    return { id, color, symbol, pct, path: `M${x1} ${y1} A${r} ${r} 0 ${large} 1 ${x2} ${y2} L${ix2} ${iy2} A${ir} ${ir} 0 ${large} 0 ${ix1} ${iy1} Z` };
+    const midA = startA + sweep / 2;
+    const labelR = (r + ir) / 2;
+    const lx = cx + labelR * Math.cos(toR(midA)), ly = cy + labelR * Math.sin(toR(midA));
+    return { id, color, symbol, name, image, pct, path: `M${x1} ${y1} A${r} ${r} 0 ${large} 1 ${x2} ${y2} L${ix2} ${iy2} A${ir} ${ir} 0 ${large} 0 ${ix1} ${iy1} Z`, lx, ly };
   });
+  const hovSlice = hovered ? slices.find(s => s.id === hovered) : null;
   return (
-    <div className="donut-wrap">
-      <svg viewBox="0 0 140 140" className="donut-svg">
-        {slices.map(s => <path key={s.id} d={s.path} fill={s.color} opacity="0.9" />)}
-        <text x={cx} y={cy - 4} textAnchor="middle" fill="#fff" fontSize="9" fontFamily="Nunito" fontWeight="700">Portfolio</text>
-        <text x={cx} y={cy + 8} textAnchor="middle" fill="rgba(255,255,255,0.6)" fontSize="7" fontFamily="Nunito">{entries.length} aset</text>
-      </svg>
-      <div className="donut-legend">
-        {slices.slice(0, 5).map(s => (
-          <div key={s.id} className="legend-row">
-            <span className="legend-dot" style={{ background: s.color }} />
-            <span className="legend-sym">{s.symbol.toUpperCase()}</span>
-            <span className="legend-pct">{(s.pct * 100).toFixed(1)}%</span>
+    <div className="donut-wrap-v2">
+      <div className="donut-svg-wrap">
+        <svg viewBox="0 0 160 160" className="donut-svg-v2">
+          <defs>
+            {slices.map(s => (
+              <filter key={`glow-${s.id}`} id={`glow-${s.id}`} x="-30%" y="-30%" width="160%" height="160%">
+                <feGaussianBlur stdDeviation="3" result="blur"/>
+                <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+            ))}
+          </defs>
+          {/* Track */}
+          <circle cx={cx} cy={cy} r={(r+ir)/2} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth={r-ir}/>
+          {slices.map(s => (
+            <path key={s.id} d={s.path}
+              fill={s.color.solid}
+              opacity={hovered === null ? 0.88 : hovered === s.id ? 1 : 0.35}
+              filter={hovered === s.id ? `url(#glow-${s.id})` : undefined}
+              style={{ transform: hovered === s.id ? `scale(1.04)` : 'scale(1)', transformOrigin: `${cx}px ${cy}px`, transition: 'all 0.2s', cursor: 'pointer' }}
+              onMouseEnter={() => setHovered(s.id)}
+              onMouseLeave={() => setHovered(null)}
+            />
+          ))}
+          {/* Show % label only for slices > 8% */}
+          {slices.filter(s => s.pct > 0.08).map(s => (
+            <text key={`lbl-${s.id}`} x={s.lx} y={s.ly} textAnchor="middle" dominantBaseline="middle"
+              fill="#fff" fontSize="6.5" fontWeight="900" fontFamily="Nunito" style={{pointerEvents:'none'}}>
+              {(s.pct*100).toFixed(0)}%
+            </text>
+          ))}
+          {/* Center */}
+          {hovSlice ? (
+            <>
+              <text x={cx} y={cy-10} textAnchor="middle" fill="#fff" fontSize="8.5" fontWeight="900" fontFamily="Nunito">{hovSlice.symbol.toUpperCase()}</text>
+              <text x={cx} y={cy+2}  textAnchor="middle" fill={hovSlice.color.solid} fontSize="9.5" fontWeight="900" fontFamily="Nunito">{(hovSlice.pct*100).toFixed(1)}%</text>
+              <text x={cx} y={cy+13} textAnchor="middle" fill="rgba(255,255,255,0.5)" fontSize="6" fontFamily="Nunito">{hovSlice.name.length > 10 ? hovSlice.name.slice(0,10)+'…' : hovSlice.name}</text>
+            </>
+          ) : (
+            <>
+              <text x={cx} y={cy-5} textAnchor="middle" fill="#fff" fontSize="8" fontWeight="700" fontFamily="Nunito">Portfolio</text>
+              <text x={cx} y={cy+7} textAnchor="middle" fill="rgba(255,255,255,0.45)" fontSize="6.5" fontFamily="Nunito">{entries.length} aset</text>
+            </>
+          )}
+        </svg>
+      </div>
+      <div className="donut-legend-v2">
+        {slices.slice(0, 6).map(s => (
+          <div key={s.id} className={`legend-row-v2 ${hovered === s.id ? 'hovered' : ''}`}
+            onMouseEnter={() => setHovered(s.id)} onMouseLeave={() => setHovered(null)}>
+            <span className="legend-dot-v2" style={{ background: s.color.solid, boxShadow: `0 0 6px ${s.color.glow}` }}/>
+            <div className="legend-info">
+              <span className="legend-sym-v2">{s.symbol.toUpperCase()}</span>
+              <span className="legend-name-v2">{s.name.length > 9 ? s.name.slice(0,9)+'…' : s.name}</span>
+            </div>
+            <span className="legend-pct-v2" style={{ color: s.color.solid }}>{(s.pct * 100).toFixed(1)}%</span>
           </div>
         ))}
+        {slices.length > 6 && <div className="legend-more">+{slices.length - 6} lainnya</div>}
       </div>
     </div>
   );
@@ -134,6 +199,7 @@ export default function App() {
   const [marketCoins, setMarketCoins] = useState<CoinMarket[]>([]);
   const [currentPrices, setCurrentPrices] = useState<Record<string, number>>({});
   const [marketLoading, setMarketLoading] = useState(true);
+  const [marketTimeframe, setMarketTimeframe] = useState<'1h'|'4h'|'24h'>('24h');
   const [news, setNews] = useState<NewsItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -143,6 +209,9 @@ export default function App() {
   const [addForm, setAddForm] = useState({ valueIDR: '', amountCoin: '', note: '', type: 'buy' as 'buy' | 'sell' });
   const [editId, setEditId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<any>({});
+  // pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   // import/export
   const [showImport, setShowImport] = useState(false);
   const [importStatus, setImportStatus] = useState<{ type: 'idle' | 'preview' | 'success' | 'error'; message: string; preview?: Asset[] }>({ type: 'idle', message: '' });
@@ -154,7 +223,12 @@ export default function App() {
   useEffect(() => { return onAuthChange(u => { setUser(u); setAuthLoading(false); }); }, []);
 
   useEffect(() => {
-    if (!user) { setAssets([]); return; }
+    if (!user) {
+      // User logged out — keep showing assets from memory (already loaded)
+      // Don't clear so data isn't lost on logout
+      return;
+    }
+    // User logged in — load their specific data
     loadSavingsFromCloud(user.uid).then(data => { setAssets(data); });
   }, [user]);
 
@@ -173,7 +247,7 @@ export default function App() {
     try {
       const [fgR, coinsR] = await Promise.all([
         fetch('https://api.alternative.me/fng/'),
-        fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&sparkline=false&price_change_percentage=24h')
+        fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&sparkline=false&price_change_percentage=1h%2C4h%2C24h')
       ]);
       const fg = await fgR.json();
       if (fg.data?.[0]) setFearGreed({ value: parseInt(fg.data[0].value), label: fg.data[0].value_classification });
@@ -181,6 +255,7 @@ export default function App() {
       setMarketCoins(coins);
       const sorted = [...coins].sort((a, b) => (b.price_change_percentage_24h ?? 0) - (a.price_change_percentage_24h ?? 0));
       setTopGainers(sorted.slice(0, 5)); setTopLosers(sorted.slice(-5).reverse());
+      // also store all coins for timeframe filtering
       const prices: Record<string, number> = {}; coins.forEach(c => prices[c.id] = c.current_price); setCurrentPrices(prices);
     } catch {} finally { setMarketLoading(false); }
   }, []);
@@ -193,12 +268,15 @@ export default function App() {
     setNewsLoading(true);
     setNews([]);
     const allNews: NewsItem[] = [];
+    const cacheBust = `&_=${Date.now()}`;
 
-    // Source 1: mktnews.net via RSS proxy
+    // Source 1: mktnews.net via RSS proxy (try multiple feed URLs)
+    const mktFeedUrls = ['https://mktnews.net/feed', 'https://mktnews.net/feed/', 'https://mktnews.net/rss', 'https://mktnews.net/?feed=rss2'];
+    for (const feedUrl of mktFeedUrls) {
     try {
-      const mktRes = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent('https://mktnews.net/feed/')}&count=15`);
+      const mktRes = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(feedUrl)}&count=15${cacheBust}`);
       const mktData = await mktRes.json();
-      if (mktData.items?.length) {
+      if (mktData.status === 'ok' && mktData.items?.length) {
         mktData.items.forEach((item: any) => {
           const pub = new Date(item.pubDate);
           const titleLower = (item.title || '').toLowerCase();
@@ -212,11 +290,13 @@ export default function App() {
           });
         });
       }
+      break; // success, stop trying
     } catch {}
+    } // end for loop
 
     // Source 2: CryptoCompare
     try {
-      const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=15');
+      const r = await fetch(`https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=latest&limit=20&_=${Date.now()}`);
       const d = await r.json();
       if (d.Data) {
         d.Data.forEach((n: any) => {
@@ -236,7 +316,7 @@ export default function App() {
 
     // Source 3: CoinGecko news
     try {
-      const r2 = await fetch('https://api.coingecko.com/api/v3/news');
+      const r2 = await fetch(`https://api.coingecko.com/api/v3/news?_=${Date.now()}`);
       const d2 = await r2.json();
       if (d2.data) {
         d2.data.slice(0, 10).forEach((n: any) => {
@@ -267,7 +347,7 @@ export default function App() {
     return () => { clearInterval(i1); clearInterval(i2); };
   }, [fetchBTC, fetchMarket, fetchUSDIDR]);
 
-  useEffect(() => { if (activeTab === 'news' && !news.length) fetchNews(); }, [activeTab, news.length, fetchNews]);
+  useEffect(() => { if (activeTab === 'news') fetchNews(); }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Add Asset ─────────────────────────────────────────────────────────────
   const handleIDRChange = (val: string) => {
@@ -429,7 +509,7 @@ export default function App() {
         {/* Tabs */}
         <div className="tabs">
           <button className={`tab-btn ${activeTab === 'dashboard' ? 'active' : ''}`} onClick={() => setActiveTab('dashboard')}>📊 Dashboard</button>
-          <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>📜 Riwayat</button>
+          <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => { setActiveTab('history'); setCurrentPage(1); }}>📜 Riwayat</button>
           <button className={`tab-btn ${activeTab === 'news' ? 'active' : ''}`} onClick={() => setActiveTab('news')}>📰 Berita</button>
         </div>
 
@@ -449,25 +529,41 @@ export default function App() {
 
             <div className="two-col-grid">
               <div className="glass-card chart-card"><h3 className="section-title">🥧 Komposisi Aset</h3><DonutChart assets={assets} currentPrices={currentPrices} /></div>
-              <div className="glass-card fg-card"><h3 className="section-title">🌡️ Fear & Greed</h3>
-                {marketLoading ? <div className="mkt-loading">Memuat...</div> : fearGreed ? <FGGauge value={fearGreed.value} label={fearGreed.label} /> : <div className="mkt-loading">Tidak tersedia</div>}
+              <div className="glass-card fg-card">
+                <h3 className="section-title" style={{textAlign:'center'}}>🌡️ Fear & Greed</h3>
+                <div className="fg-center-wrap">
+                  {marketLoading ? <div className="mkt-loading">Memuat...</div> : fearGreed ? <FGGauge value={fearGreed.value} label={fearGreed.label} /> : <div className="mkt-loading">Tidak tersedia</div>}
+                </div>
               </div>
             </div>
 
             <div className="glass-card market-card">
-              <h3 className="section-title">📡 Pergerakan Market</h3>
-              {marketLoading ? <div className="mkt-loading">Memuat data market...</div> : (
-                <div className="movers-grid">
-                  <div className="movers-col">
-                    <div className="movers-head gain-head">🚀 Top 5 Naik</div>
-                    {topGainers.map(c => (<div key={c.id} className="mover-row"><img src={c.image} alt={c.symbol} className="coin-img" /><div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div><span className="coin-chg gain">+{(c.price_change_percentage_24h ?? 0).toFixed(2)}%</span></div>))}
-                  </div>
-                  <div className="movers-col">
-                    <div className="movers-head loss-head">📉 Top 5 Turun</div>
-                    {topLosers.map(c => (<div key={c.id} className="mover-row"><img src={c.image} alt={c.symbol} className="coin-img" /><div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div><span className="coin-chg loss">{(c.price_change_percentage_24h ?? 0).toFixed(2)}%</span></div>))}
-                  </div>
+              <div className="market-header">
+                <h3 className="section-title" style={{margin:0}}>📡 Pergerakan Market</h3>
+                <div className="timeframe-tabs">
+                  {(['1h','4h','24h'] as const).map(tf => (
+                    <button key={tf} className={`tf-btn ${marketTimeframe===tf?'active':''}`} onClick={()=>setMarketTimeframe(tf)}>{tf}</button>
+                  ))}
                 </div>
-              )}
+              </div>
+              {marketLoading ? <div className="mkt-loading">Memuat data market...</div> : (() => {
+                const getChg = (c: CoinMarket) => marketTimeframe === '1h' ? (c.price_change_percentage_1h_in_currency ?? 0) : marketTimeframe === '4h' ? (c.price_change_percentage_4h_in_currency ?? 0) : (c.price_change_percentage_24h ?? 0);
+                const sorted = [...marketCoins].filter(c => c.current_price > 0).sort((a,b) => getChg(b) - getChg(a));
+                const gainers = sorted.slice(0,5);
+                const losers = sorted.slice(-5).reverse();
+                return (
+                  <div className="movers-grid">
+                    <div className="movers-col">
+                      <div className="movers-head gain-head">🚀 Top 5 Naik</div>
+                      {gainers.map(c => (<div key={c.id} className="mover-row"><img src={c.image} alt={c.symbol} className="coin-img"/><div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div><span className="coin-chg gain">+{getChg(c).toFixed(2)}%</span></div>))}
+                    </div>
+                    <div className="movers-col">
+                      <div className="movers-head loss-head">📉 Top 5 Turun</div>
+                      {losers.map(c => (<div key={c.id} className="mover-row"><img src={c.image} alt={c.symbol} className="coin-img"/><div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div><span className="coin-chg loss">{getChg(c).toFixed(2)}%</span></div>))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <button className="add-btn candy-btn" onClick={() => { setShowAddModal(true); setAddStep('select'); }}>＋ Tambah Aset</button>
           </>
@@ -533,9 +629,25 @@ export default function App() {
             {assets.length === 0 ? (
               <div className="glass-card empty-state"><div className="empty-icon">🪙</div><p>Belum ada aset. Tambah atau import sekarang!</p></div>
             ) : (
+              <>
+                {/* Page size + info */}
+                <div className="page-controls">
+                  <div className="page-info">
+                    Menampilkan {Math.min((currentPage - 1) * pageSize + 1, assets.length)}–{Math.min(currentPage * pageSize, assets.length)} dari {assets.length} transaksi
+                  </div>
+                  <div className="page-size-select">
+                    <span className="page-size-label">Per halaman:</span>
+                    {[10, 25, 50].map(s => (
+                      <button key={s} className={`page-size-btn ${pageSize === s ? 'active' : ''}`}
+                        onClick={() => { setPageSize(s); setCurrentPage(1); }}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+
               <div className="history-list">
-                {assets.map((a, i) => {
-                  const color = CANDY[i % CANDY.length];
+                {assets.slice((currentPage - 1) * pageSize, currentPage * pageSize).map((a, i) => {
+                  const globalIdx = (currentPage - 1) * pageSize + i;
+                  const color = CANDY[globalIdx % CANDY.length];
                   const isEdit = editId === a.id;
                   const curVal = a.amountCoin * (currentPrices[a.coinId] || a.priceAtBuyUSD) * usdToIdr;
                   const pl = curVal - a.valueIDR;
@@ -578,6 +690,27 @@ export default function App() {
                   );
                 })}
               </div>
+
+                {/* Pagination */}
+                {Math.ceil(assets.length / pageSize) > 1 && (
+                  <div className="pagination">
+                    <button className="page-btn" onClick={() => setCurrentPage(1)} disabled={currentPage === 1}>«</button>
+                    <button className="page-btn" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>‹</button>
+                    {Array.from({ length: Math.ceil(assets.length / pageSize) }, (_, i) => i + 1)
+                      .filter(p => p === 1 || p === Math.ceil(assets.length / pageSize) || Math.abs(p - currentPage) <= 1)
+                      .reduce((acc: (number | string)[], p, idx, arr) => {
+                        if (idx > 0 && (p as number) - (arr[idx - 1] as number) > 1) acc.push('...');
+                        acc.push(p); return acc;
+                      }, [])
+                      .map((p, idx) => typeof p === 'string'
+                        ? <span key={`ellipsis-${idx}`} className="page-ellipsis">...</span>
+                        : <button key={p} className={`page-btn ${currentPage === p ? 'active' : ''}`} onClick={() => setCurrentPage(p as number)}>{p}</button>
+                      )}
+                    <button className="page-btn" onClick={() => setCurrentPage(p => Math.min(Math.ceil(assets.length / pageSize), p + 1))} disabled={currentPage === Math.ceil(assets.length / pageSize)}>›</button>
+                    <button className="page-btn" onClick={() => setCurrentPage(Math.ceil(assets.length / pageSize))} disabled={currentPage === Math.ceil(assets.length / pageSize)}>»</button>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
@@ -590,7 +723,7 @@ export default function App() {
                 <h3 className="section-title" style={{ margin: 0 }}>📰 Berita Crypto Terkini</h3>
                 <p className="news-src-label">mktnews.net • CryptoCompare • CoinGecko</p>
               </div>
-              <button className="refresh-btn" onClick={fetchNews} disabled={newsLoading}>{newsLoading ? '⏳' : '🔄'}</button>
+              <button className="refresh-btn" onClick={() => { setNews([]); fetchNews(); }} disabled={newsLoading}>{newsLoading ? '⏳' : '🔄'}</button>
             </div>
             {newsLoading ? (
               <div className="glass-card empty-state"><div className="empty-icon">📡</div><p>Memuat berita terkini...</p></div>

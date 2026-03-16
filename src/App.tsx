@@ -194,8 +194,6 @@ export default function App() {
   const [usdToIdr, setUsdToIdr] = useState(16200);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'history' | 'news'>('dashboard');
   const [fearGreed, setFearGreed] = useState<FearGreed | null>(null);
-  const [topGainers, setTopGainers] = useState<CoinMarket[]>([]);
-  const [topLosers, setTopLosers] = useState<CoinMarket[]>([]);
   const [marketCoins, setMarketCoins] = useState<CoinMarket[]>([]);
   const [currentPrices, setCurrentPrices] = useState<Record<string, number>>({});
   const [marketLoading, setMarketLoading] = useState(true);
@@ -254,8 +252,7 @@ export default function App() {
       const coins: CoinMarket[] = await coinsR.json();
       setMarketCoins(coins);
       const sorted = [...coins].sort((a, b) => (b.price_change_percentage_24h ?? 0) - (a.price_change_percentage_24h ?? 0));
-      setTopGainers(sorted.slice(0, 5)); setTopLosers(sorted.slice(-5).reverse());
-      // also store all coins for timeframe filtering
+      // gainers/losers computed in render based on marketTimeframe
       const prices: Record<string, number> = {}; coins.forEach(c => prices[c.id] = c.current_price); setCurrentPrices(prices);
     } catch {} finally { setMarketLoading(false); }
   }, []);

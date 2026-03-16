@@ -1,422 +1,511 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import * as XLSX from 'xlsx';
+import { signInWithGoogle, signOutUser, onAuthChange, saveSavingsToCloud, loadSavingsFromCloud, User } from './firebase';
 import './App.css';
 
-interface Saving {
+// ─── Types ───────────────────────────────────────────────────────────────────
+interface Asset {
   id: string;
   date: string;
-  amountBTC: number;
+  coinId: string;
+  coinSymbol: string;
+  coinName: string;
+  coinImage: string;
+  amountCoin: number;
+  priceAtBuyUSD: number;
+  valueIDR: number;
   note: string;
-  priceAtBuy: number;
   type: 'buy' | 'sell';
 }
 
-interface BTCData {
-  price: number;
-  change24h: number;
-  high24h: number;
-  low24h: number;
-  lastUpdated: string;
-}
+interface BTCData { price: number; change24h: number; lastUpdated: string; }
+interface FearGreed { value: number; label: string; }
+interface CoinMarket { id: string; symbol: string; name: string; image: string; current_price: number; price_change_percentage_24h: number; market_cap: number; }
+interface NewsItem { title: string; url: string; source: string; published: string; summary: string; sentiment: 'positive'|'negative'|'neutral'; }
 
-interface FearGreed {
-  value: number;
-  label: string;
-}
+const STORAGE_KEY = 'crypto_assets_v2';
+const fmtIDR = (v: number) => new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',minimumFractionDigits:0,maximumFractionDigits:0}).format(v);
+const fmtUSD = (v: number) => new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(v);
+const fmtCoin = (v: number) => v < 0.01 ? v.toFixed(8) : v < 1 ? v.toFixed(4) : v.toFixed(2);
 
-interface CoinTicker {
-  id: string;
-  symbol: string;
-  name: string;
-  change: number;
-  price: number;
-  image: string;
-}
-
-const STORAGE_KEY = 'btc_savings_v1';
-function formatIDR(v: number) { return new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',minimumFractionDigits:0,maximumFractionDigits:0}).format(v); }
-function formatBTC(v: number) { return v.toFixed(8); }
-function formatUSD(v: number) { return new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',minimumFractionDigits:2,maximumFractionDigits:2}).format(v); }
-
-const CANDY_COLORS = [
-  { glow:'#ff6eb4', bg:'rgba(255,110,180,0.18)', border:'rgba(255,110,180,0.45)' },
-  { glow:'#7c6fff', bg:'rgba(124,111,255,0.18)', border:'rgba(124,111,255,0.45)' },
-  { glow:'#43e8d8', bg:'rgba(67,232,216,0.18)',  border:'rgba(67,232,216,0.45)'  },
-  { glow:'#ffb347', bg:'rgba(255,179,71,0.18)',  border:'rgba(255,179,71,0.45)'  },
-  { glow:'#a8ff78', bg:'rgba(168,255,120,0.18)', border:'rgba(168,255,120,0.45)' },
-  { glow:'#ff7f7f', bg:'rgba(255,127,127,0.18)', border:'rgba(255,127,127,0.45)' },
+const CANDY = [
+  {glow:'#ff6eb4',bg:'rgba(255,110,180,0.15)',border:'rgba(255,110,180,0.4)'},
+  {glow:'#7c6fff',bg:'rgba(124,111,255,0.15)',border:'rgba(124,111,255,0.4)'},
+  {glow:'#43e8d8',bg:'rgba(67,232,216,0.15)', border:'rgba(67,232,216,0.4)' },
+  {glow:'#ffb347',bg:'rgba(255,179,71,0.15)', border:'rgba(255,179,71,0.4)' },
+  {glow:'#a8ff78',bg:'rgba(168,255,120,0.15)',border:'rgba(168,255,120,0.4)'},
+  {glow:'#ff7f7f',bg:'rgba(255,127,127,0.15)',border:'rgba(255,127,127,0.4)'},
 ];
 
-function parseExcelDate(raw: any): string | null {
-  if (!raw) return null;
-  if (typeof raw === 'number') {
-    const d = XLSX.SSF.parse_date_code(raw);
-    if (d) return new Date(d.y, d.m-1, d.d).toISOString();
-  }
-  if (typeof raw === 'string') {
-    const c = raw.trim();
-    if (/^\d{4}-\d{2}-\d{2}/.test(c)) { const d=new Date(c); if(!isNaN(d.getTime())) return d.toISOString(); }
-    const months: Record<string,number>={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-    const m2=c.match(/^(\d+)-([A-Za-z]+)\s*(\d{4})/);
-    if(m2){const mo=months[m2[2].toLowerCase().slice(0,3)];if(mo!==undefined)return new Date(parseInt(m2[3]),mo,parseInt(m2[1])).toISOString();}
-    const m3=c.match(/^(\d+)\s+([A-Za-z]+)\s+(\d{4})/);
-    if(m3){const mo=months[m3[2].toLowerCase().slice(0,3)];if(mo!==undefined)return new Date(parseInt(m3[3]),mo,parseInt(m3[1])).toISOString();}
-  }
-  if (raw instanceof Date && !isNaN(raw.getTime())) return raw.toISOString();
-  return null;
-}
+// ─── Fear & Greed Gauge ───────────────────────────────────────────────────────
+function FGGauge({ value, label }: FearGreed) {
+  const clamp = Math.max(0, Math.min(100, value));
+  // needle: 0 = far left (-180deg from positive x-axis = pointing left), 100 = far right (0deg)
+  // arc goes from -180° to 0° (left to right across top)
+  const needleDeg = -180 + (clamp / 100) * 180; // -180 to 0
+  const toRad = (d: number) => d * Math.PI / 180;
+  const cx = 110, cy = 100, r = 78;
+  const needleRad = toRad(needleDeg);
+  const nx = cx + (r - 10) * Math.cos(needleRad);
+  const ny = cy + (r - 10) * Math.sin(needleRad);
+  const getCol = (v: number) => v<=20?'#ef4444':v<=40?'#f97316':v<=60?'#eab308':v<=80?'#84cc16':'#22c55e';
+  const col = getCol(clamp);
 
-function FearGreedGauge({ value, label }: FearGreed) {
-  const angle = -90 + (value / 100) * 180;
-  const getColor = (v: number) => v <= 25 ? '#f87171' : v <= 45 ? '#fb923c' : v <= 55 ? '#facc15' : v <= 75 ? '#a3e635' : '#4ade80';
-  const color = getColor(value);
-  const cx = 100, cy = 90, r = 70;
-  const arcPath = (startDeg: number, endDeg: number, col: string) => {
-    const toRad = (d: number) => (d * Math.PI) / 180;
-    const x1 = cx + r * Math.cos(toRad(startDeg));
-    const y1 = cy + r * Math.sin(toRad(startDeg));
-    const x2 = cx + r * Math.cos(toRad(endDeg));
-    const y2 = cy + r * Math.sin(toRad(endDeg));
-    return <path d={`M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`} stroke={col} strokeWidth="14" fill="none" strokeLinecap="round" />;
+  // draw colored arc segments
+  const arcSeg = (startDeg: number, endDeg: number, color: string) => {
+    const x1 = cx + r * Math.cos(toRad(startDeg)), y1 = cy + r * Math.sin(toRad(startDeg));
+    const x2 = cx + r * Math.cos(toRad(endDeg)),   y2 = cy + r * Math.sin(toRad(endDeg));
+    const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+    return <path d={`M${x1} ${y1} A${r} ${r} 0 ${large} 1 ${x2} ${y2}`} stroke={color} strokeWidth="16" fill="none" strokeLinecap="butt"/>;
   };
-  const needleRad = (angle * Math.PI) / 180;
-  const nx = cx + 55 * Math.cos(needleRad);
-  const ny = cy + 55 * Math.sin(needleRad);
+
   return (
-    <div className="fg-gauge-wrap">
-      <svg viewBox="0 0 200 110" className="fg-svg">
-        <path d={`M ${cx-r} ${cy} A ${r} ${r} 0 0 1 ${cx+r} ${cy}`} stroke="rgba(255,255,255,0.08)" strokeWidth="14" fill="none" />
-        {arcPath(-180,-144,'#f87171')}
-        {arcPath(-144,-108,'#fb923c')}
-        {arcPath(-108, -72,'#facc15')}
-        {arcPath(-72,  -36,'#a3e635')}
-        {arcPath(-36,    0,'#4ade80')}
-        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={color} strokeWidth="3" strokeLinecap="round" />
-        <circle cx={cx} cy={cy} r="5" fill={color} />
-        <text x={cx} y={cy-10} textAnchor="middle" fill="#fff" fontSize="22" fontWeight="900" fontFamily="Nunito">{value}</text>
-        <text x={cx} y={cy+6} textAnchor="middle" fill={color} fontSize="9" fontWeight="800" fontFamily="Nunito">{label.toUpperCase()}</text>
-        <text x={cx-r} y={cy+18} textAnchor="middle" fill="rgba(255,255,255,0.35)" fontSize="7">Fear</text>
-        <text x={cx+r} y={cy+18} textAnchor="middle" fill="rgba(255,255,255,0.35)" fontSize="7">Greed</text>
+    <div className="fg-wrap">
+      <svg viewBox="0 0 220 115" className="fg-svg">
+        {/* track */}
+        <path d={`M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}`} stroke="rgba(255,255,255,0.07)" strokeWidth="16" fill="none"/>
+        {/* colored segments */}
+        {arcSeg(-180,-144,'#ef4444')}
+        {arcSeg(-144,-108,'#f97316')}
+        {arcSeg(-108, -72,'#eab308')}
+        {arcSeg(-72,  -36,'#84cc16')}
+        {arcSeg(-36,    0,'#22c55e')}
+        {/* needle */}
+        <line x1={cx} y1={cy} x2={nx} y2={ny} stroke={col} strokeWidth="2.5" strokeLinecap="round"/>
+        <circle cx={cx} cy={cy} r="5" fill={col} filter={`drop-shadow(0 0 4px ${col})`}/>
+        {/* value */}
+        <text x={cx} y={cy-16} textAnchor="middle" fill="#fff" fontSize="26" fontWeight="900" fontFamily="Nunito">{clamp}</text>
+        <text x={cx} y={cy-2}  textAnchor="middle" fill={col}  fontSize="8.5" fontWeight="800" fontFamily="Nunito" letterSpacing="1">{label.toUpperCase()}</text>
+        <text x={cx-r+4} y={cy+14} fill="rgba(255,255,255,0.3)" fontSize="7" fontFamily="Nunito">Extreme Fear</text>
+        <text x={cx+r-4} y={cy+14} fill="rgba(255,255,255,0.3)" fontSize="7" fontFamily="Nunito" textAnchor="end">Extreme Greed</text>
       </svg>
     </div>
   );
 }
 
-export default function App() {
-  const [savings, setSavings] = useState<Saving[]>([]);
-  const [btcData, setBtcData] = useState<BTCData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ amountBTC: '', note: '', type: 'buy' as 'buy'|'sell' });
-  const [usdToIdr, setUsdToIdr] = useState(16200);
-  const [activeTab, setActiveTab] = useState<'dashboard'|'history'|'import'>('dashboard');
-  const [priceError, setPriceError] = useState(false);
-  const [fearGreed, setFearGreed] = useState<FearGreed|null>(null);
-  const [topGainers, setTopGainers] = useState<CoinTicker[]>([]);
-  const [topLosers, setTopLosers]   = useState<CoinTicker[]>([]);
-  const [marketLoading, setMarketLoading] = useState(true);
-  const [importStatus, setImportStatus] = useState<{type:'idle'|'success'|'error'|'preview',message:string,preview?:Saving[]}>({type:'idle',message:''});
-  const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  // edit state
-  const [editId, setEditId] = useState<string|null>(null);
-  const [editForm, setEditForm] = useState<{date:string,amountBTC:string,note:string,priceAtBuy:string,type:'buy'|'sell'}>({date:'',amountBTC:'',note:'',priceAtBuy:'',type:'buy'});
+// ─── Mini Sparkline ────────────────────────────────────────────────────────────
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  if (!data.length) return null;
+  const min = Math.min(...data), max = Math.max(...data);
+  const range = max - min || 1;
+  const w = 80, h = 30;
+  const pts = data.map((v, i) => `${(i / (data.length - 1)) * w},${h - ((v - min) / range) * h}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{width:80,height:30}}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  );
+}
 
-  const fetchBTCPrice = useCallback(async () => {
+// ─── Portfolio Donut ──────────────────────────────────────────────────────────
+function DonutChart({ assets, currentPrices }: { assets: Asset[], currentPrices: Record<string,number> }) {
+  const grouped: Record<string, { value: number; color: string; symbol: string }> = {};
+  const palette = ['#ff6eb4','#a78bfa','#43e8d8','#ffb347','#a8ff78','#ff7f7f','#60a5fa','#f472b6'];
+  let ci = 0;
+  assets.filter(a=>a.type==='buy').forEach(a => {
+    const price = currentPrices[a.coinId] || a.priceAtBuyUSD;
+    const val = a.amountCoin * price;
+    if (!grouped[a.coinId]) grouped[a.coinId] = { value: 0, color: palette[ci++ % palette.length], symbol: a.coinSymbol };
+    grouped[a.coinId].value += val;
+  });
+  const entries = Object.entries(grouped).sort((a,b) => b[1].value - a[1].value);
+  const total = entries.reduce((s,[,v]) => s + v.value, 0);
+  if (!total) return <div className="donut-empty">Belum ada aset</div>;
+
+  const cx=70, cy=70, r=55, ir=38;
+  let angle = -90;
+  const slices = entries.map(([id, {value, color, symbol}]) => {
+    const pct = value / total;
+    const sweep = pct * 360;
+    const startA = angle; angle += sweep;
+    const toR = (d:number) => d * Math.PI / 180;
+    const x1=cx+r*Math.cos(toR(startA)), y1=cy+r*Math.sin(toR(startA));
+    const x2=cx+r*Math.cos(toR(startA+sweep)), y2=cy+r*Math.sin(toR(startA+sweep));
+    const ix1=cx+ir*Math.cos(toR(startA)), iy1=cy+ir*Math.sin(toR(startA));
+    const ix2=cx+ir*Math.cos(toR(startA+sweep)), iy2=cy+ir*Math.sin(toR(startA+sweep));
+    const large = sweep > 180 ? 1 : 0;
+    return { id, color, symbol, pct, path:`M${x1} ${y1} A${r} ${r} 0 ${large} 1 ${x2} ${y2} L${ix2} ${iy2} A${ir} ${ir} 0 ${large} 0 ${ix1} ${iy1} Z` };
+  });
+
+  return (
+    <div className="donut-wrap">
+      <svg viewBox="0 0 140 140" className="donut-svg">
+        {slices.map(s => <path key={s.id} d={s.path} fill={s.color} opacity="0.9"/>)}
+        <text x={cx} y={cy-4} textAnchor="middle" fill="#fff" fontSize="9" fontFamily="Nunito" fontWeight="700">Portfolio</text>
+        <text x={cx} y={cy+8} textAnchor="middle" fill="rgba(255,255,255,0.6)" fontSize="7" fontFamily="Nunito">{entries.length} aset</text>
+      </svg>
+      <div className="donut-legend">
+        {slices.slice(0,5).map(s=>(
+          <div key={s.id} className="legend-row">
+            <span className="legend-dot" style={{background:s.color}}/>
+            <span className="legend-sym">{s.symbol.toUpperCase()}</span>
+            <span className="legend-pct">{(s.pct*100).toFixed(1)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [user, setUser] = useState<User|null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [btcData, setBtcData] = useState<BTCData|null>(null);
+  const [usdToIdr, setUsdToIdr] = useState(16200);
+  const [activeTab, setActiveTab] = useState<'dashboard'|'history'|'news'>('dashboard');
+  const [fearGreed, setFearGreed] = useState<FearGreed|null>(null);
+  const [topGainers, setTopGainers] = useState<CoinMarket[]>([]);
+  const [topLosers, setTopLosers]   = useState<CoinMarket[]>([]);
+  const [marketCoins, setMarketCoins] = useState<CoinMarket[]>([]);
+  const [currentPrices, setCurrentPrices] = useState<Record<string,number>>({});
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [marketLoading, setMarketLoading] = useState(true);
+  // Add asset modal
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addStep, setAddStep] = useState<'select'|'form'>('select');
+  const [selectedCoin, setSelectedCoin] = useState<CoinMarket|null>(null);
+  const [searchCoin, setSearchCoin] = useState('');
+  const [addForm, setAddForm] = useState({ valueIDR: '', amountCoin: '', note: '', type: 'buy' as 'buy'|'sell' });
+  // Edit
+  const [editId, setEditId] = useState<string|null>(null);
+  const [editForm, setEditForm] = useState<any>({});
+  const saveTimer = useRef<any>(null);
+
+  // Auth
+  useEffect(() => {
+    return onAuthChange(u => { setUser(u); setAuthLoading(false); });
+  }, []);
+
+  // Load assets when user changes
+  useEffect(() => {
+    if (!user) { 
+      const local = localStorage.getItem(STORAGE_KEY);
+      if (local) setAssets(JSON.parse(local));
+      return;
+    }
+    loadSavingsFromCloud(user.uid).then(data => {
+      if (data.length) setAssets(data);
+      else {
+        const local = localStorage.getItem(STORAGE_KEY);
+        if (local) setAssets(JSON.parse(local));
+      }
+    });
+  }, [user]);
+
+  // Save assets (debounced)
+  const persistAssets = useCallback((data: Asset[]) => {
+    setAssets(data);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    if (user) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => saveSavingsToCloud(user.uid, data), 1500);
+    }
+  }, [user]);
+
+  const fetchBTC = useCallback(async () => {
     try {
-      const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_high=true&include_24hr_low=true');
-      const data = await res.json();
-      const btc = data.bitcoin;
-      setBtcData({ price:btc.usd, change24h:btc.usd_24h_change, high24h:btc.usd_24h_high, low24h:btc.usd_24h_low, lastUpdated:new Date().toLocaleTimeString('id-ID') });
-      setPriceError(false);
-    } catch { setPriceError(true); } finally { setLoading(false); }
+      const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true');
+      const d = await r.json();
+      setBtcData({ price: d.bitcoin.usd, change24h: d.bitcoin.usd_24h_change, lastUpdated: new Date().toLocaleTimeString('id-ID') });
+    } catch {}
   }, []);
 
   const fetchMarket = useCallback(async () => {
     setMarketLoading(true);
     try {
-      const [fgRes, coinsRes] = await Promise.all([
+      const [fgR, coinsR] = await Promise.all([
         fetch('https://api.alternative.me/fng/'),
-        fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=50&sparkline=false&price_change_percentage=24h')
+        fetch('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&sparkline=false&price_change_percentage=24h')
       ]);
-      const fgData = await fgRes.json();
-      if (fgData.data?.[0]) {
-        setFearGreed({ value: parseInt(fgData.data[0].value), label: fgData.data[0].value_classification });
-      }
-      const coins = await coinsRes.json();
-      const sorted = [...coins].sort((a:any,b:any) => b.price_change_percentage_24h - a.price_change_percentage_24h);
-      const map = (c: any): CoinTicker => ({ id:c.id, symbol:c.symbol, name:c.name, change:c.price_change_percentage_24h, price:c.current_price, image:c.image });
-      setTopGainers(sorted.slice(0,5).map(map));
-      setTopLosers(sorted.slice(-5).reverse().map(map));
+      const fg = await fgR.json();
+      if (fg.data?.[0]) setFearGreed({ value: parseInt(fg.data[0].value), label: fg.data[0].value_classification });
+      const coins: CoinMarket[] = await coinsR.json();
+      setMarketCoins(coins);
+      const sorted = [...coins].sort((a,b)=>b.price_change_percentage_24h-a.price_change_percentage_24h);
+      setTopGainers(sorted.slice(0,5));
+      setTopLosers(sorted.slice(-5).reverse());
+      const prices: Record<string,number> = {};
+      coins.forEach(c => prices[c.id] = c.current_price);
+      setCurrentPrices(prices);
     } catch {}
     setMarketLoading(false);
   }, []);
 
-  const fetchUSDToIDR = useCallback(async () => {
-    try { const res=await fetch('https://api.exchangerate-api.com/v4/latest/USD'); const d=await res.json(); if(d.rates?.IDR) setUsdToIdr(d.rates.IDR); } catch {}
+  const fetchUSDIDR = useCallback(async () => {
+    try { const r=await fetch('https://api.exchangerate-api.com/v4/latest/USD'); const d=await r.json(); if(d.rates?.IDR) setUsdToIdr(d.rates.IDR); } catch {}
+  }, []);
+
+  // News via CryptoCompare free API
+  const fetchNews = useCallback(async () => {
+    setNewsLoading(true);
+    try {
+      const r = await fetch('https://min-api.cryptocompare.com/data/v2/news/?lang=EN&sortOrder=popular&limit=20');
+      const d = await r.json();
+      if (d.Data) {
+        const mapped: NewsItem[] = d.Data.map((n: any) => ({
+          title: n.title,
+          url: n.url,
+          source: n.source_info?.name || n.source,
+          published: new Date(n.published_on * 1000).toLocaleDateString('id-ID', {day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}),
+          summary: n.body?.slice(0, 160) + '...',
+          sentiment: n.tags?.toLowerCase().includes('negative') ? 'negative' : n.tags?.toLowerCase().includes('positive') ? 'positive' : 'neutral',
+        }));
+        setNews(mapped);
+      }
+    } catch {}
+    setNewsLoading(false);
   }, []);
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      setSavings(parsed.map((s: any) => ({ ...s, type: s.type || 'buy' })));
-    }
-    fetchBTCPrice(); fetchMarket(); fetchUSDToIDR();
-    const i1 = setInterval(fetchBTCPrice, 60000);
+    fetchBTC(); fetchMarket(); fetchUSDIDR();
+    const i1 = setInterval(fetchBTC, 60000);
     const i2 = setInterval(fetchMarket, 300000);
     return () => { clearInterval(i1); clearInterval(i2); };
-  }, [fetchBTCPrice, fetchMarket, fetchUSDToIDR]);
+  }, [fetchBTC, fetchMarket, fetchUSDIDR]);
 
-  const saveSavings = (data: Saving[]) => { setSavings(data); localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); };
-  const addSaving = () => {
-    if (!form.amountBTC || isNaN(Number(form.amountBTC)) || Number(form.amountBTC)<=0) return;
-    saveSavings([{ id:Date.now().toString(), date:new Date().toISOString(), amountBTC:Number(form.amountBTC), note:form.note, priceAtBuy:btcData?.price||0, type:form.type }, ...savings]);
-    setForm({ amountBTC:'', note:'', type:'buy' }); setShowForm(false);
-  };
-  const deleteSaving = (id: string) => saveSavings(savings.filter(s=>s.id!==id));
+  useEffect(() => {
+    if (activeTab === 'news' && !news.length) fetchNews();
+  }, [activeTab, news.length, fetchNews]);
 
-  const startEdit = (s: Saving) => {
-    setEditId(s.id);
-    setEditForm({
-      date: new Date(s.date).toISOString().split('T')[0],
-      amountBTC: String(s.amountBTC),
-      note: s.note,
-      priceAtBuy: String(s.priceAtBuy),
-      type: s.type || 'buy',
+  // Recalc coin amount when IDR value changes in add form
+  const handleIDRChange = (val: string) => {
+    setAddForm(f => {
+      const idr = parseFloat(val);
+      if (!isNaN(idr) && selectedCoin) {
+        const usd = idr / usdToIdr;
+        const amount = usd / selectedCoin.current_price;
+        return { ...f, valueIDR: val, amountCoin: isFinite(amount) ? fmtCoin(amount) : '' };
+      }
+      return { ...f, valueIDR: val };
     });
   };
+
+  const handleCoinAmountChange = (val: string) => {
+    setAddForm(f => {
+      const amt = parseFloat(val);
+      if (!isNaN(amt) && selectedCoin) {
+        const idr = amt * selectedCoin.current_price * usdToIdr;
+        return { ...f, amountCoin: val, valueIDR: Math.round(idr).toString() };
+      }
+      return { ...f, amountCoin: val };
+    });
+  };
+
+  const confirmAdd = () => {
+    if (!selectedCoin || !addForm.amountCoin || !addForm.valueIDR) return;
+    const newAsset: Asset = {
+      id: Date.now().toString(),
+      date: new Date().toISOString(),
+      coinId: selectedCoin.id,
+      coinSymbol: selectedCoin.symbol,
+      coinName: selectedCoin.name,
+      coinImage: selectedCoin.image,
+      amountCoin: parseFloat(addForm.amountCoin),
+      priceAtBuyUSD: selectedCoin.current_price,
+      valueIDR: parseFloat(addForm.valueIDR),
+      note: addForm.note,
+      type: addForm.type,
+    };
+    persistAssets([newAsset, ...assets]);
+    setShowAddModal(false); setAddStep('select'); setSelectedCoin(null);
+    setAddForm({ valueIDR:'', amountCoin:'', note:'', type:'buy' }); setSearchCoin('');
+  };
+
+  const startEdit = (a: Asset) => {
+    setEditId(a.id);
+    setEditForm({ date: a.date.split('T')[0], amountCoin: String(a.amountCoin), priceAtBuyUSD: String(a.priceAtBuyUSD), valueIDR: String(a.valueIDR), note: a.note, type: a.type });
+  };
   const saveEdit = () => {
-    if (!editId) return;
-    saveSavings(savings.map(s => s.id !== editId ? s : {
-      ...s,
-      date: new Date(editForm.date).toISOString(),
-      amountBTC: Number(editForm.amountBTC),
-      note: editForm.note,
-      priceAtBuy: Number(editForm.priceAtBuy),
-      type: editForm.type,
-    }));
+    persistAssets(assets.map(a => a.id!==editId ? a : { ...a, date:new Date(editForm.date).toISOString(), amountCoin:parseFloat(editForm.amountCoin), priceAtBuyUSD:parseFloat(editForm.priceAtBuyUSD), valueIDR:parseFloat(editForm.valueIDR), note:editForm.note, type:editForm.type }));
     setEditId(null);
   };
 
-  // Excel import
-  const parseExcelFile = (file: File) => {
-    setImportStatus({ type:'idle', message:'Membaca file...' });
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const wb = XLSX.read(new Uint8Array(e.target?.result as ArrayBuffer), { type:'array', cellDates:false });
-        const ws = wb.Sheets[wb.SheetNames.includes('Sheet1')?'Sheet1':wb.SheetNames[0]];
-        const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header:1, defval:null });
-        let dataStart = 7;
-        for (let i=0;i<rows.length;i++) {
-          if (String(rows[i][1]||'').includes('Jumlah')) { dataStart=i+1; break; }
-        }
-        const parsed: Saving[] = [];
-        for (let i=dataStart;i<rows.length;i++) {
-          const row=rows[i];
-          const dateStr=parseExcelDate(row[0]);
-          const btcAmt=parseFloat(String(row[1]));
-          if (!dateStr||isNaN(btcAmt)||btcAmt<=0) continue;
-          const hargaBeliIDR=parseFloat(String(row[2]||0));
-          parsed.push({ id:`xl_${i}_${Date.now()}`, date:dateStr, amountBTC:btcAmt, note:row[8]&&String(row[8]).trim()?String(row[8]).trim():'', priceAtBuy:hargaBeliIDR>0?hargaBeliIDR/usdToIdr:0, type:'buy' });
-        }
-        if (parsed.length===0) { setImportStatus({type:'error',message:'Tidak ada data valid yang ditemukan.'}); return; }
-        setImportStatus({ type:'preview', message:`Ditemukan ${parsed.length} transaksi`, preview:parsed });
-      } catch { setImportStatus({type:'error',message:'Gagal membaca file.'}); }
-    };
-    reader.readAsArrayBuffer(file);
-  };
-  const confirmImport = (replace: boolean) => {
-    if (!importStatus.preview) return;
-    const newData = replace ? importStatus.preview : [...importStatus.preview,...savings];
-    const seen=new Set<string>();
-    saveSavings(newData.filter(s=>{const k=`${s.date}_${s.amountBTC}`;if(seen.has(k))return false;seen.add(k);return true;}));
-    setImportStatus({ type:'success', message:`✅ Berhasil import ${importStatus.preview.length} transaksi!` });
-  };
+  // Compute totals
+  const buyAssets = assets.filter(a=>a.type==='buy');
+  const totalCostIDR = buyAssets.reduce((s,a)=>s+a.valueIDR, 0);
+  const currentValueIDR = buyAssets.reduce((s,a)=>s+(a.amountCoin*(currentPrices[a.coinId]||a.priceAtBuyUSD)*usdToIdr), 0);
+  const sellRevIDR = assets.filter(a=>a.type==='sell').reduce((s,a)=>s+a.valueIDR,0);
+  const profitIDR = currentValueIDR + sellRevIDR - totalCostIDR;
+  const profitPct = totalCostIDR > 0 ? (profitIDR / totalCostIDR) * 100 : 0;
 
-  // Totals — sell reduces holdings
-  const totalBTC    = savings.reduce((a,s)=>s.type==='sell'?a-s.amountBTC:a+s.amountBTC, 0);
-  const totalCostUSD= savings.filter(s=>s.type==='buy').reduce((a,s)=>a+s.amountBTC*s.priceAtBuy,0);
-  const sellRevUSD  = savings.filter(s=>s.type==='sell').reduce((a,s)=>a+s.amountBTC*s.priceAtBuy,0);
-  const currentValueUSD = Math.max(totalBTC,0)*(btcData?.price||0);
-  const profitUSD   = currentValueUSD + sellRevUSD - totalCostUSD;
-  const profitPct   = totalCostUSD>0?(profitUSD/totalCostUSD)*100:0;
-  const totalBTCInIDR = currentValueUSD*usdToIdr;
-  const costInIDR   = totalCostUSD*usdToIdr;
-  const profitInIDR = profitUSD*usdToIdr;
+  const filteredCoins = marketCoins.filter(c =>
+    c.name.toLowerCase().includes(searchCoin.toLowerCase()) ||
+    c.symbol.toLowerCase().includes(searchCoin.toLowerCase())
+  ).slice(0, 30);
+
+  if (authLoading) return (
+    <div className="app"><div className="bg-blobs"><div className="blob blob-1"/><div className="blob blob-2"/><div className="blob blob-3"/></div>
+      <div className="splash"><div className="splash-icon">₿</div><div className="splash-text">Memuat...</div></div>
+    </div>
+  );
+
+  if (!user) return (
+    <div className="app">
+      <div className="bg-blobs"><div className="blob blob-1"/><div className="blob blob-2"/><div className="blob blob-3"/><div className="blob blob-4"/><div className="blob blob-5"/></div>
+      <div className="login-screen">
+        <div className="login-card glass-card">
+          <div className="login-icon">₿</div>
+          <h1 className="login-title">Crypto Savings</h1>
+          <p className="login-sub">Lacak portofolio kripto kamu dengan cantik 🍬</p>
+          <div className="login-features">
+            <div className="lf-item">📊 Dashboard real-time</div>
+            <div className="lf-item">🌡️ Fear & Greed Index</div>
+            <div className="lf-item">📰 Berita crypto terkini</div>
+            <div className="lf-item">☁️ Data tersimpan di cloud</div>
+          </div>
+          <button className="google-btn" onClick={signInWithGoogle}>
+            <svg viewBox="0 0 48 48" className="google-icon"><path fill="#FFC107" d="M43.6 20H24v8h11.3C33.6 33.1 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.1 6.5 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20c11 0 20-9 20-20 0-1.3-.1-2.7-.4-4z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.5 16.1 18.9 13 24 13c3 0 5.7 1.1 7.8 2.9l5.7-5.7C34.1 6.5 29.3 4 24 4 16.2 4 9.4 8.4 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-1.9 13.5-5l-6.2-5.3C29.5 35.6 26.9 36.5 24 36.5c-5.2 0-9.6-3.5-11.2-8.2l-6.5 5C9.7 39.9 16.4 44 24 44z"/><path fill="#1976D2" d="M43.6 20H24v8h11.3c-.8 2.3-2.3 4.2-4.3 5.6l6.2 5.3C40.8 35.3 44 30 44 24c0-1.3-.1-2.7-.4-4z"/></svg>
+            Masuk dengan Google
+          </button>
+          <p className="login-note">Data kamu tersimpan aman di cloud, bisa diakses dari mana saja.</p>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div className="app">
-      <div className="bg-blobs">
-        <div className="blob blob-1"/><div className="blob blob-2"/><div className="blob blob-3"/>
-        <div className="blob blob-4"/><div className="blob blob-5"/>
-      </div>
+      <div className="bg-blobs"><div className="blob blob-1"/><div className="blob blob-2"/><div className="blob blob-3"/><div className="blob blob-4"/><div className="blob blob-5"/></div>
       <div className="container">
+
+        {/* Header */}
         <header className="header glass-card">
           <div className="header-left">
             <span className="btc-icon">₿</span>
-            <div><h1 className="app-title">Bitcoin Savings</h1><p className="app-subtitle">Tabungan Kripto Kamu 🍬</p></div>
+            <div><h1 className="app-title">Crypto Savings</h1><p className="app-subtitle">Portofolio Kripto Kamu 🍬</p></div>
           </div>
           <div className="header-right">
-            {loading ? <div className="price-loading">Memuat...</div>
-            : priceError ? <div className="price-error">⚠️ Error</div>
-            : btcData ? (
+            {btcData && (
               <div className="live-price">
                 <span className="price-label">BTC/USD</span>
-                <span className="price-value">{formatUSD(btcData.price)}</span>
+                <span className="price-value">{fmtUSD(btcData.price)}</span>
                 <span className={`price-change ${btcData.change24h>=0?'green':'red'}`}>{btcData.change24h>=0?'▲':'▼'} {Math.abs(btcData.change24h).toFixed(2)}%</span>
-                <span className="price-updated">Update {btcData.lastUpdated}</span>
               </div>
-            ):null}
+            )}
+            <div className="user-chip" onClick={signOutUser} title="Logout">
+              <img src={user.photoURL||''} alt="" className="user-avatar"/>
+              <span className="user-name">{user.displayName?.split(' ')[0]}</span>
+              <span className="logout-icon">⏻</span>
+            </div>
           </div>
         </header>
 
+        {/* Tabs */}
         <div className="tabs">
           <button className={`tab-btn ${activeTab==='dashboard'?'active':''}`} onClick={()=>setActiveTab('dashboard')}>📊 Dashboard</button>
           <button className={`tab-btn ${activeTab==='history'?'active':''}`} onClick={()=>setActiveTab('history')}>📜 Riwayat</button>
-          <button className={`tab-btn ${activeTab==='import'?'active':''}`} onClick={()=>setActiveTab('import')}>📥 Import</button>
+          <button className={`tab-btn ${activeTab==='news'?'active':''}`} onClick={()=>setActiveTab('news')}>📰 Berita</button>
         </div>
 
-        {/* ===== DASHBOARD ===== */}
+        {/* ═══ DASHBOARD ═══════════════════════════════════════════════════════ */}
         {activeTab==='dashboard' && (
           <>
+            {/* Stats */}
             <div className="stats-grid">
-              <div className="stat-card glass-card candy-pink"><div className="stat-icon">₿</div><div className="stat-label">Total Bitcoin</div><div className="stat-value mono">{formatBTC(Math.max(totalBTC,0))}</div><div className="stat-sub">BTC</div></div>
-              <div className="stat-card glass-card candy-purple"><div className="stat-icon">💰</div><div className="stat-label">Nilai Sekarang</div><div className="stat-value">{formatIDR(totalBTCInIDR)}</div><div className="stat-sub">{formatUSD(currentValueUSD)}</div></div>
-              <div className="stat-card glass-card candy-teal"><div className="stat-icon">🏦</div><div className="stat-label">Total Modal</div><div className="stat-value">{formatIDR(costInIDR)}</div><div className="stat-sub">{formatUSD(totalCostUSD)}</div></div>
-              <div className={`stat-card glass-card ${profitUSD>=0?'candy-green':'candy-red'}`}><div className="stat-icon">{profitUSD>=0?'📈':'📉'}</div><div className="stat-label">Profit / Rugi</div><div className={`stat-value ${profitUSD>=0?'text-green':'text-red'}`}>{profitUSD>=0?'+':''}{formatIDR(profitInIDR)}</div><div className={`stat-sub ${profitUSD>=0?'text-green':'text-red'}`}>{profitPct>=0?'+':''}{profitPct.toFixed(2)}%</div></div>
+              <div className="stat-card glass-card candy-pink">
+                <div className="stat-icon">💼</div><div className="stat-label">Nilai Portfolio</div>
+                <div className="stat-value">{fmtIDR(currentValueIDR)}</div>
+                <div className="stat-sub">{fmtUSD(currentValueIDR/usdToIdr)}</div>
+              </div>
+              <div className="stat-card glass-card candy-teal">
+                <div className="stat-icon">🏦</div><div className="stat-label">Total Modal</div>
+                <div className="stat-value">{fmtIDR(totalCostIDR)}</div>
+                <div className="stat-sub">{fmtUSD(totalCostIDR/usdToIdr)}</div>
+              </div>
+              <div className={`stat-card glass-card ${profitIDR>=0?'candy-green':'candy-red'}`}>
+                <div className="stat-icon">{profitIDR>=0?'📈':'📉'}</div><div className="stat-label">Profit / Rugi</div>
+                <div className={`stat-value ${profitIDR>=0?'text-green':'text-red'}`}>{profitIDR>=0?'+':''}{fmtIDR(profitIDR)}</div>
+                <div className={`stat-sub ${profitIDR>=0?'text-green':'text-red'}`}>{profitPct>=0?'+':''}{profitPct.toFixed(2)}%</div>
+              </div>
+              <div className="stat-card glass-card candy-purple">
+                <div className="stat-icon">🪙</div><div className="stat-label">Jumlah Aset</div>
+                <div className="stat-value">{new Set(buyAssets.map(a=>a.coinId)).size}</div>
+                <div className="stat-sub">{assets.length} transaksi</div>
+              </div>
             </div>
 
-            {/* Market Info — Fear & Greed + Gainers/Losers */}
+            {/* Portfolio Donut + Market Sentiment */}
+            <div className="two-col-grid">
+              <div className="glass-card chart-card">
+                <h3 className="section-title">🥧 Komposisi Aset</h3>
+                <DonutChart assets={assets} currentPrices={currentPrices} />
+              </div>
+
+              <div className="glass-card fg-card">
+                <h3 className="section-title">🌡️ Fear & Greed</h3>
+                {marketLoading ? <div className="mkt-loading">Memuat...</div>
+                  : fearGreed ? <FGGauge value={fearGreed.value} label={fearGreed.label} />
+                  : <div className="mkt-loading">Tidak tersedia</div>}
+              </div>
+            </div>
+
+            {/* Top Gainers & Losers */}
             <div className="glass-card market-card">
-              <h3 className="section-title">🌡️ Sentimen & Market</h3>
-              {marketLoading ? (
-                <div className="market-loading">Memuat data market...</div>
-              ) : (
-                <div className="market-layout">
-                  {/* Fear & Greed */}
-                  <div className="fg-section">
-                    <div className="fg-title">Fear & Greed Index</div>
-                    {fearGreed ? <FearGreedGauge value={fearGreed.value} label={fearGreed.label} /> : <div className="fg-na">Data tidak tersedia</div>}
+              <h3 className="section-title">📡 Pergerakan Market</h3>
+              {marketLoading ? <div className="mkt-loading">Memuat data market...</div> : (
+                <div className="movers-grid">
+                  <div className="movers-col">
+                    <div className="movers-head gain-head">🚀 Top 5 Naik</div>
+                    {topGainers.map(c=>(
+                      <div key={c.id} className="mover-row">
+                        <img src={c.image} alt={c.symbol} className="coin-img"/>
+                        <div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div>
+                        <span className="coin-chg gain">+{c.price_change_percentage_24h.toFixed(2)}%</span>
+                      </div>
+                    ))}
                   </div>
-                  {/* Gainers */}
-                  <div className="movers-section">
-                    <div className="movers-title gainers-title">🚀 Top 5 Naik</div>
-                    <div className="movers-list">
-                      {topGainers.map(c=>(
-                        <div key={c.id} className="mover-row">
-                          <img src={c.image} alt={c.symbol} className="coin-img" />
-                          <div className="coin-info"><span className="coin-name">{c.symbol.toUpperCase()}</span><span className="coin-price">{formatUSD(c.price)}</span></div>
-                          <span className="coin-change gain">+{c.change.toFixed(2)}%</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                  {/* Losers */}
-                  <div className="movers-section">
-                    <div className="movers-title losers-title">📉 Top 5 Turun</div>
-                    <div className="movers-list">
-                      {topLosers.map(c=>(
-                        <div key={c.id} className="mover-row">
-                          <img src={c.image} alt={c.symbol} className="coin-img" />
-                          <div className="coin-info"><span className="coin-name">{c.symbol.toUpperCase()}</span><span className="coin-price">{formatUSD(c.price)}</span></div>
-                          <span className="coin-change loss">{c.change.toFixed(2)}%</span>
-                        </div>
-                      ))}
-                    </div>
+                  <div className="movers-col">
+                    <div className="movers-head loss-head">📉 Top 5 Turun</div>
+                    {topLosers.map(c=>(
+                      <div key={c.id} className="mover-row">
+                        <img src={c.image} alt={c.symbol} className="coin-img"/>
+                        <div className="coin-info"><span className="coin-sym">{c.symbol.toUpperCase()}</span><span className="coin-px">{fmtUSD(c.current_price)}</span></div>
+                        <span className="coin-chg loss">{c.price_change_percentage_24h.toFixed(2)}%</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Portfolio extra stats */}
-            {btcData && savings.length>0 && (
-              <div className="glass-card dca-card">
-                <h3 className="section-title">📊 Statistik Portfolio</h3>
-                <div className="dca-grid">
-                  <div className="dca-item"><span className="dca-label">Kurs USD/IDR</span><span className="dca-val">{formatIDR(usdToIdr)}</span></div>
-                  <div className="dca-item"><span className="dca-label">Total Transaksi</span><span className="dca-val">{savings.length}x ({savings.filter(s=>s.type==='buy').length} beli / {savings.filter(s=>s.type==='sell').length} jual)</span></div>
-                  <div className="dca-item"><span className="dca-label">Rata-rata Beli</span><span className="dca-val">{formatUSD(totalBTC>0?totalCostUSD/savings.filter(s=>s.type==='buy').reduce((a,s)=>a+s.amountBTC,0):0)}</span></div>
-                  <div className="dca-item"><span className="dca-label">Rata-rata Beli (IDR)</span><span className="dca-val">{formatIDR((totalBTC>0?totalCostUSD/savings.filter(s=>s.type==='buy').reduce((a,s)=>a+s.amountBTC,0):0)*usdToIdr)}</span></div>
-                </div>
-              </div>
-            )}
-
-            <button className="add-btn candy-btn" onClick={()=>setShowForm(true)}>＋ Tambah Tabungan BTC</button>
-            {showForm && (
-              <div className="glass-card form-card">
-                <h3 className="section-title">✨ Tambah Transaksi</h3>
-                {/* Type toggle */}
-                <div className="type-toggle">
-                  <button className={`type-btn buy-btn ${form.type==='buy'?'active':''}`} onClick={()=>setForm(f=>({...f,type:'buy'}))}>🟢 Beli</button>
-                  <button className={`type-btn sell-btn ${form.type==='sell'?'active':''}`} onClick={()=>setForm(f=>({...f,type:'sell'}))}>🔴 Jual</button>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Jumlah BTC</label>
-                  <input type="number" className="form-input" placeholder="Contoh: 0.001" value={form.amountBTC} step="0.00000001" min="0" onChange={e=>setForm(f=>({...f,amountBTC:e.target.value}))} />
-                  {form.amountBTC&&btcData&&Number(form.amountBTC)>0&&<div className="form-hint">≈ {formatUSD(Number(form.amountBTC)*btcData.price)} | {formatIDR(Number(form.amountBTC)*btcData.price*usdToIdr)}</div>}
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Catatan (opsional)</label>
-                  <input type="text" className="form-input" placeholder="Contoh: DCA Maret 2025" value={form.note} onChange={e=>setForm(f=>({...f,note:e.target.value}))} />
-                </div>
-                <div className="form-actions">
-                  <button className="btn-cancel" onClick={()=>{setShowForm(false);setForm({amountBTC:'',note:'',type:'buy'});}}>Batal</button>
-                  <button className="btn-save candy-btn" onClick={addSaving}>💾 Simpan</button>
-                </div>
-              </div>
-            )}
+            <button className="add-btn candy-btn" onClick={()=>{setShowAddModal(true);setAddStep('select');}}>＋ Tambah Aset</button>
           </>
         )}
 
-        {/* ===== HISTORY ===== */}
+        {/* ═══ HISTORY ═════════════════════════════════════════════════════════ */}
         {activeTab==='history' && (
           <div className="history-section">
             <div className="history-header">
-              <h3 className="section-title">📜 Riwayat ({savings.length} transaksi)</h3>
-              <button className="add-btn-sm candy-btn" onClick={()=>{setActiveTab('dashboard');setTimeout(()=>setShowForm(true),100);}}>＋ Tambah</button>
+              <h3 className="section-title">📜 Riwayat ({assets.length} transaksi)</h3>
+              <button className="add-btn-sm candy-btn" onClick={()=>{setShowAddModal(true);setAddStep('select');}}>＋ Tambah</button>
             </div>
-            {savings.length===0 ? (
-              <div className="glass-card empty-state"><div className="empty-icon">🪙</div><p>Belum ada data. Import dari Excel atau tambah manual!</p></div>
+            {assets.length===0 ? (
+              <div className="glass-card empty-state"><div className="empty-icon">🪙</div><p>Belum ada aset. Tambah sekarang!</p></div>
             ) : (
               <div className="history-list">
-                {savings.map((s,i)=>{
-                  const color=CANDY_COLORS[i%CANDY_COLORS.length];
-                  const isEditing=editId===s.id;
-                  const currentVal=s.amountBTC*(btcData?.price||0);
-                  const cost=s.amountBTC*s.priceAtBuy;
-                  const profit=currentVal-cost;
-                  const pct=cost>0?(profit/cost)*100:0;
+                {assets.map((a,i)=>{
+                  const color=CANDY[i%CANDY.length];
+                  const isEdit=editId===a.id;
+                  const curVal=a.amountCoin*(currentPrices[a.coinId]||a.priceAtBuyUSD)*usdToIdr;
+                  const pl=curVal-a.valueIDR;
+                  const plPct=a.valueIDR>0?(pl/a.valueIDR)*100:0;
                   return (
-                    <div key={s.id} className="history-item glass-card"
-                      style={{background:color.bg,borderColor:color.border,boxShadow:`0 0 24px ${color.glow}33`}}>
-
-                      {isEditing ? (
-                        /* ---- EDIT FORM ---- */
+                    <div key={a.id} className="history-item glass-card" style={{background:color.bg,borderColor:color.border,boxShadow:`0 0 24px ${color.glow}22`}}>
+                      {isEdit ? (
                         <div className="edit-form">
-                          <div className="edit-title">✏️ Edit Transaksi</div>
+                          <div className="edit-title">✏️ Edit — {a.coinName}</div>
                           <div className="type-toggle">
-                            <button className={`type-btn buy-btn ${editForm.type==='buy'?'active':''}`} onClick={()=>setEditForm(f=>({...f,type:'buy'}))}>🟢 Beli</button>
-                            <button className={`type-btn sell-btn ${editForm.type==='sell'?'active':''}`} onClick={()=>setEditForm(f=>({...f,type:'sell'}))}>🔴 Jual</button>
+                            <button className={`type-btn buy-btn ${editForm.type==='buy'?'active':''}`} onClick={()=>setEditForm((f:any)=>({...f,type:'buy'}))}>🟢 Beli</button>
+                            <button className={`type-btn sell-btn ${editForm.type==='sell'?'active':''}`} onClick={()=>setEditForm((f:any)=>({...f,type:'sell'}))}>🔴 Jual</button>
                           </div>
                           <div className="edit-grid">
-                            <div className="form-group">
-                              <label className="form-label">Tanggal</label>
-                              <input type="date" className="form-input" value={editForm.date} onChange={e=>setEditForm(f=>({...f,date:e.target.value}))} />
-                            </div>
-                            <div className="form-group">
-                              <label className="form-label">Jumlah BTC</label>
-                              <input type="number" className="form-input" value={editForm.amountBTC} step="0.00000001" onChange={e=>setEditForm(f=>({...f,amountBTC:e.target.value}))} />
-                            </div>
-                            <div className="form-group">
-                              <label className="form-label">Harga Beli/Jual (USD)</label>
-                              <input type="number" className="form-input" value={editForm.priceAtBuy} onChange={e=>setEditForm(f=>({...f,priceAtBuy:e.target.value}))} />
-                            </div>
-                            <div className="form-group">
-                              <label className="form-label">Catatan</label>
-                              <input type="text" className="form-input" value={editForm.note} onChange={e=>setEditForm(f=>({...f,note:e.target.value}))} />
-                            </div>
+                            <div className="form-group"><label className="form-label">Tanggal</label><input type="date" className="form-input" value={editForm.date} onChange={e=>setEditForm((f:any)=>({...f,date:e.target.value}))}/></div>
+                            <div className="form-group"><label className="form-label">Jumlah Koin</label><input type="number" className="form-input" value={editForm.amountCoin} onChange={e=>setEditForm((f:any)=>({...f,amountCoin:e.target.value}))}/></div>
+                            <div className="form-group"><label className="form-label">Harga Beli (USD)</label><input type="number" className="form-input" value={editForm.priceAtBuyUSD} onChange={e=>setEditForm((f:any)=>({...f,priceAtBuyUSD:e.target.value}))}/></div>
+                            <div className="form-group"><label className="form-label">Nilai (IDR)</label><input type="number" className="form-input" value={editForm.valueIDR} onChange={e=>setEditForm((f:any)=>({...f,valueIDR:e.target.value}))}/></div>
+                            <div className="form-group" style={{gridColumn:'1/-1'}}><label className="form-label">Catatan</label><input type="text" className="form-input" value={editForm.note} onChange={e=>setEditForm((f:any)=>({...f,note:e.target.value}))}/></div>
                           </div>
                           <div className="form-actions">
                             <button className="btn-cancel" onClick={()=>setEditId(null)}>Batal</button>
@@ -424,24 +513,25 @@ export default function App() {
                           </div>
                         </div>
                       ) : (
-                        /* ---- VIEW MODE ---- */
                         <>
                           <div className="history-top">
-                            <div className="history-top-left">
-                              <span className={`tx-badge ${s.type==='sell'?'badge-sell':'badge-buy'}`}>{s.type==='sell'?'JUAL':'BELI'}</span>
-                              <span className="history-date">{new Date(s.date).toLocaleDateString('id-ID',{day:'numeric',month:'long',year:'numeric'})}</span>
+                            <div className="htop-left">
+                              <img src={a.coinImage} alt={a.coinSymbol} className="h-coin-img"/>
+                              <span className={`tx-badge ${a.type==='sell'?'badge-sell':'badge-buy'}`}>{a.type==='sell'?'JUAL':'BELI'}</span>
+                              <span className="history-date">{new Date(a.date).toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'})}</span>
                             </div>
                             <div className="history-actions">
-                              <button className="edit-btn" onClick={()=>startEdit(s)} title="Edit">✏️</button>
-                              <button className="delete-btn" onClick={()=>deleteSaving(s.id)} title="Hapus">✕</button>
+                              <button className="edit-btn" onClick={()=>startEdit(a)}>✏️</button>
+                              <button className="delete-btn" onClick={()=>persistAssets(assets.filter(x=>x.id!==a.id))}>✕</button>
                             </div>
                           </div>
-                          <div className="history-btc">{formatBTC(s.amountBTC)} <span className="btc-tag">BTC</span></div>
-                          {s.note && <div className="history-note">📝 {s.note}</div>}
+                          <div className="h-coin-name">{a.coinName} <span className="h-coin-sym">{a.coinSymbol.toUpperCase()}</span></div>
+                          <div className="h-amount">{fmtCoin(a.amountCoin)} {a.coinSymbol.toUpperCase()}</div>
+                          {a.note && <div className="history-note">📝 {a.note}</div>}
                           <div className="history-stats">
-                            <div className="h-stat"><span className="h-label">{s.type==='sell'?'Harga Jual':'Harga Beli'}</span><span className="h-val">{s.priceAtBuy>0?formatUSD(s.priceAtBuy):'-'}</span></div>
-                            <div className="h-stat"><span className="h-label">Nilai Kini</span><span className="h-val">{formatUSD(currentVal)}</span></div>
-                            <div className="h-stat"><span className="h-label">P/L</span><span className={`h-val ${profit>=0?'text-green':'text-red'}`}>{profit>=0?'+':''}{pct.toFixed(1)}%</span></div>
+                            <div className="h-stat"><span className="h-label">Modal</span><span className="h-val">{fmtIDR(a.valueIDR)}</span></div>
+                            <div className="h-stat"><span className="h-label">Nilai Kini</span><span className="h-val">{fmtIDR(curVal)}</span></div>
+                            <div className="h-stat"><span className="h-label">P/L</span><span className={`h-val ${pl>=0?'text-green':'text-red'}`}>{pl>=0?'+':''}{plPct.toFixed(1)}%</span></div>
                           </div>
                         </>
                       )}
@@ -453,71 +543,108 @@ export default function App() {
           </div>
         )}
 
-        {/* ===== IMPORT ===== */}
-        {activeTab==='import' && (
-          <div className="import-section">
-            <div className="glass-card import-card">
-              <h3 className="section-title">📥 Import dari Excel</h3>
-              <p className="import-desc">Upload file <strong>tabunganku.xlsx</strong> kamu. Otomatis baca Sheet1.</p>
-              <div className={`drop-zone ${isDragging?'dragging':''}`}
-                onDragOver={e=>{e.preventDefault();setIsDragging(true);}}
-                onDragLeave={()=>setIsDragging(false)}
-                onDrop={e=>{e.preventDefault();setIsDragging(false);const f=e.dataTransfer.files[0];if(f)parseExcelFile(f);}}
-                onClick={()=>fileInputRef.current?.click()}>
-                <div className="drop-icon">📂</div>
-                <div className="drop-text">Drag & drop file Excel di sini</div>
-                <div className="drop-sub">atau klik untuk pilih file</div>
-                <div className="drop-format">.xlsx • .xls</div>
-                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={e=>{const f=e.target.files?.[0];if(f)parseExcelFile(f);e.target.value='';}} />
-              </div>
-              {importStatus.type==='error' && <div className="import-status error">❌ {importStatus.message}</div>}
-              {importStatus.type==='success' && <div className="import-status success">{importStatus.message}</div>}
-              {importStatus.type==='preview' && importStatus.preview && (
-                <div className="import-preview">
-                  <div className="preview-info">🔍 Ditemukan <strong>{importStatus.preview.length} transaksi</strong> dari Sheet1</div>
-                  <div className="preview-list">
-                    {importStatus.preview.slice(0,5).map((s,i)=>(
-                      <div key={i} className="preview-row">
-                        <span className="pr-date">{new Date(s.date).toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'})}</span>
-                        <span className="pr-btc">{formatBTC(s.amountBTC)} BTC</span>
-                        <span className="pr-price">{s.priceAtBuy>0?formatUSD(s.priceAtBuy):'-'}</span>
-                        {s.note&&<span className="pr-note">📝{s.note}</span>}
-                      </div>
-                    ))}
-                    {importStatus.preview.length>5&&<div className="preview-more">...dan {importStatus.preview.length-5} transaksi lainnya</div>}
-                  </div>
-                  <div className="import-actions">
-                    {savings.length>0 ? (
-                      <>
-                        <button className="btn-import-merge candy-btn" onClick={()=>confirmImport(false)}>🔀 Gabung dengan data existing</button>
-                        <button className="btn-import-replace" onClick={()=>confirmImport(true)}>🔄 Ganti semua data</button>
-                      </>
-                    ) : (
-                      <button className="btn-import-merge candy-btn" onClick={()=>confirmImport(false)}>✅ Import Sekarang</button>
-                    )}
-                    <button className="btn-cancel" onClick={()=>setImportStatus({type:'idle',message:''})}>Batal</button>
-                  </div>
-                </div>
-              )}
+        {/* ═══ NEWS ════════════════════════════════════════════════════════════ */}
+        {activeTab==='news' && (
+          <div className="news-section">
+            <div className="news-header">
+              <h3 className="section-title">📰 Berita Crypto Terkini</h3>
+              <button className="refresh-btn" onClick={fetchNews} disabled={newsLoading}>{newsLoading?'⏳':'🔄'}</button>
             </div>
-            <div className="glass-card guide-card">
-              <h3 className="section-title">📋 Kolom yang Dibaca</h3>
-              <div className="guide-grid">
-                <div className="guide-item"><span className="guide-col">Kolom A</span><span className="guide-desc">Tanggal Beli/Jual</span></div>
-                <div className="guide-item"><span className="guide-col">Kolom B</span><span className="guide-desc">Jumlah BTC</span></div>
-                <div className="guide-item"><span className="guide-col">Kolom C</span><span className="guide-desc">Harga Beli (IDR)</span></div>
-                <div className="guide-item"><span className="guide-col">Kolom I</span><span className="guide-desc">Catatan / Sumber</span></div>
+            {newsLoading ? (
+              <div className="glass-card empty-state"><div className="empty-icon">📡</div><p>Memuat berita terkini...</p></div>
+            ) : news.length===0 ? (
+              <div className="glass-card empty-state"><div className="empty-icon">📰</div><p>Belum ada berita. Tekan 🔄 untuk muat.</p></div>
+            ) : (
+              <div className="news-list">
+                {news.map((n,i)=>(
+                  <a key={i} href={n.url} target="_blank" rel="noopener noreferrer" className="news-card glass-card">
+                    <div className="news-top">
+                      <span className={`news-badge badge-${n.sentiment}`}>{n.sentiment==='positive'?'🟢 Bullish':n.sentiment==='negative'?'🔴 Bearish':'⚪ Netral'}</span>
+                      <span className="news-source">{n.source}</span>
+                      <span className="news-time">{n.published}</span>
+                    </div>
+                    <div className="news-title">{n.title}</div>
+                    <div className="news-summary">{n.summary}</div>
+                    <div className="news-readmore">Baca selengkapnya →</div>
+                  </a>
+                ))}
               </div>
-              <p className="guide-note">💡 Sheet yang dibaca: <strong>Sheet1</strong></p>
-            </div>
+            )}
           </div>
         )}
 
         <footer className="footer">
-          <span>Dibuat dengan ❤️ • CoinGecko • Alternative.me</span>
+          <span>Data: CoinGecko • Alternative.me • CryptoCompare</span>
           <span className="live-dot">● LIVE</span>
         </footer>
       </div>
+
+      {/* ═══ ADD ASSET MODAL ══════════════════════════════════════════════════ */}
+      {showAddModal && (
+        <div className="modal-overlay" onClick={e=>{if(e.target===e.currentTarget){setShowAddModal(false);setAddStep('select');setSelectedCoin(null);}}}>
+          <div className="modal-card glass-card">
+            {addStep==='select' ? (
+              <>
+                <div className="modal-header">
+                  <h3 className="modal-title">🪙 Pilih Aset</h3>
+                  <button className="modal-close" onClick={()=>{setShowAddModal(false);setSearchCoin('');}}>✕</button>
+                </div>
+                <input className="form-input coin-search" placeholder="🔍 Cari nama atau simbol..." value={searchCoin} onChange={e=>setSearchCoin(e.target.value)} autoFocus/>
+                <div className="coin-list">
+                  {filteredCoins.map(c=>(
+                    <div key={c.id} className="coin-row" onClick={()=>{setSelectedCoin(c);setAddStep('form');}}>
+                      <img src={c.image} alt={c.symbol} className="coin-row-img"/>
+                      <div className="coin-row-info">
+                        <span className="coin-row-name">{c.name}</span>
+                        <span className="coin-row-sym">{c.symbol.toUpperCase()}</span>
+                      </div>
+                      <div className="coin-row-right">
+                        <span className="coin-row-price">{fmtUSD(c.current_price)}</span>
+                        <span className={`coin-row-chg ${c.price_change_percentage_24h>=0?'gain':'loss'}`}>{c.price_change_percentage_24h>=0?'+':''}{c.price_change_percentage_24h.toFixed(2)}%</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : selectedCoin && (
+              <>
+                <div className="modal-header">
+                  <button className="back-btn" onClick={()=>{setAddStep('select');setAddForm({valueIDR:'',amountCoin:'',note:'',type:'buy'});}}>← Kembali</button>
+                  <h3 className="modal-title">{selectedCoin.name}</h3>
+                  <button className="modal-close" onClick={()=>{setShowAddModal(false);setAddStep('select');setSelectedCoin(null);}}>✕</button>
+                </div>
+                <div className="selected-coin-info">
+                  <img src={selectedCoin.image} alt="" className="sel-coin-img"/>
+                  <div>
+                    <div className="sel-coin-price">{fmtUSD(selectedCoin.current_price)}</div>
+                    <div className={`sel-coin-chg ${selectedCoin.price_change_percentage_24h>=0?'green':'red'}`}>{selectedCoin.price_change_percentage_24h>=0?'▲':'▼'} {Math.abs(selectedCoin.price_change_percentage_24h).toFixed(2)}%</div>
+                  </div>
+                </div>
+                <div className="type-toggle">
+                  <button className={`type-btn buy-btn ${addForm.type==='buy'?'active':''}`} onClick={()=>setAddForm(f=>({...f,type:'buy'}))}>🟢 Beli</button>
+                  <button className={`type-btn sell-btn ${addForm.type==='sell'?'active':''}`} onClick={()=>setAddForm(f=>({...f,type:'sell'}))}>🔴 Jual</button>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Nilai (Rupiah)</label>
+                  <div className="input-prefix-wrap"><span className="input-prefix">Rp</span><input type="number" className="form-input input-with-prefix" placeholder="Contoh: 500000" value={addForm.valueIDR} onChange={e=>handleIDRChange(e.target.value)}/></div>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Jumlah {selectedCoin.symbol.toUpperCase()}</label>
+                  <input type="number" className="form-input" placeholder="Otomatis terhitung" value={addForm.amountCoin} onChange={e=>handleCoinAmountChange(e.target.value)} step="any"/>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Catatan (opsional)</label>
+                  <input type="text" className="form-input" placeholder="Contoh: DCA mingguan" value={addForm.note} onChange={e=>setAddForm(f=>({...f,note:e.target.value}))}/>
+                </div>
+                <div className="form-actions">
+                  <button className="btn-cancel" onClick={()=>{setShowAddModal(false);setAddStep('select');setSelectedCoin(null);}}>Batal</button>
+                  <button className="btn-save candy-btn" onClick={confirmAdd}>💾 Simpan</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

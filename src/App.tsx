@@ -592,7 +592,11 @@ export default function App() {
                 </div>
                 <input className="form-input coin-search" placeholder="🔍 Cari nama atau simbol..." value={searchCoin} onChange={e=>setSearchCoin(e.target.value)} autoFocus/>
                 <div className="coin-list">
-                  {filteredCoins.map(c=>(
+                  {marketLoading ? (
+                    <div className="coin-loading"><span className="spinner"/>Memuat daftar aset...</div>
+                  ) : filteredCoins.length === 0 ? (
+                    <div className="coin-loading">Aset tidak ditemukan</div>
+                  ) : filteredCoins.map(c=>(
                     <div key={c.id} className="coin-row" onClick={()=>{setSelectedCoin(c);setAddStep('form');}}>
                       <img src={c.image} alt={c.symbol} className="coin-row-img"/>
                       <div className="coin-row-info">
